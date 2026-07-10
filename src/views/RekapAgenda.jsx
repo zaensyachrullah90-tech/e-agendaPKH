@@ -1,21 +1,31 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { db } from '../config/firebase';
 import { ref, onValue, update, remove } from 'firebase/database';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { uploadFileToDrive } from '../config/googleDrive';
 
+const getLocalISODate = () => {
+  const d = new Date();
+  const offset = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - offset).toISOString().split('T')[0];
+};
+
 export default function RekapAgenda() {
   const { profile, googleToken } = useAuth();
   const { showToast } = useToast();
   const [agendas, setAgendas] = useState([]);
   
-  const today = new Date();
-  const currentMonthStr = today.toISOString().slice(0, 7); 
-  const currentDateStr = today.toISOString().split('T')[0]; 
-  
-  const [selectedMonth, setSelectedMonth] = useState(currentMonthStr);
-  const [selectedDate, setSelectedDate] = useState(currentDateStr);
+  const localDateStr = getLocalISODate();
+  const [selectedMonth, setSelectedMonth] = useState(localDateStr.slice(0, 7));
+  const [selectedDate, setSelectedDate] = useState(localDateStr);
+  const [initialLoad, setInitialLoad] = useState(true); 
+
+  // MODE TAMPILAN: 'timeline' ATAU 'table'
+  const [viewMode, setViewMode] = useState('timeline');
+
+  const scrollContainerRef = useRef(null);
+  const activeDateRefs = useRef({});
 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editData, setEditData] = useState(null);
@@ -23,23 +33,47 @@ export default function RekapAgenda() {
   const [isUploading, setIsUploading] = useState(false);
 
   useEffect(() => {
+    const activeElement = activeDateRefs.current[selectedDate];
+    if (activeElement && scrollContainerRef.current && viewMode === 'timeline') {
+      setTimeout(() => {
+        activeElement.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      }, 150); 
+    }
+  }, [selectedDate, selectedMonth, viewMode]); 
+
+  useEffect(() => {
     if (!profile?.uid) return;
     const unsubscribe = onValue(ref(db, `agenda_harian/${profile.uid}`), (snapshot) => {
       if (snapshot.exists()) {
         const dataArr = Object.values(snapshot.val());
         const sorted = dataArr.sort((a, b) => {
+          if (a.tanggal !== b.tanggal) return a.tanggal.localeCompare(b.tanggal);
           const timeA = a.waktu || "00:00";
           const timeB = b.waktu || "00:00";
           return timeA.localeCompare(timeB);
         });
         setAgendas(sorted);
+
+        if (initialLoad) {
+          const todayAgendas = dataArr.filter(item => item.tanggal === selectedDate);
+          if (todayAgendas.length === 0 && dataArr.length > 0) {
+            const latestAgenda = [...dataArr].sort((a, b) => b.timestamp - a.timestamp)[0];
+            if (latestAgenda?.tanggal) {
+              setSelectedDate(latestAgenda.tanggal);
+              setSelectedMonth(latestAgenda.tanggal.slice(0, 7));
+            }
+          }
+          setInitialLoad(false); 
+        }
+
       } else {
         setAgendas([]);
+        setInitialLoad(false);
       }
     });
 
     return () => unsubscribe();
-  }, [profile]);
+  }, [profile, initialLoad, selectedDate]);
 
   const formatIndoDate = (dateString) => {
     if (!dateString) return '';
@@ -47,6 +81,12 @@ export default function RekapAgenda() {
     const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
     const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
     return `${days[date.getDay()]}, ${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
+  };
+
+  const getMonthName = (monthStr) => {
+    const [year, month] = monthStr.split('-');
+    const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    return `${months[parseInt(month, 10) - 1]} ${year}`;
   };
 
   const monthData = useMemo(() => {
@@ -72,7 +112,11 @@ export default function RekapAgenda() {
     return daysArray;
   }, [selectedMonth, agendas]);
 
+  // Data untuk Mode Timeline (Harian)
   const filteredAgendas = agendas.filter(item => item.tanggal === selectedDate);
+  // Data untuk Mode Tabel (Bulanan)
+  const monthlyAgendas = agendas.filter(item => item.tanggal?.startsWith(selectedMonth));
+
   const selectedDateObj = new Date(selectedDate);
   const isWeekend = selectedDateObj.getDay() === 0 || selectedDateObj.getDay() === 6;
   const maxAgenda = 5;
@@ -84,20 +128,17 @@ export default function RekapAgenda() {
   };
 
   const executePdfExport = () => {
-    showToast("Menyiapkan PDF...", "success"); // Diubah lebih singkat
-    setTimeout(() => {
-      window.print();
-    }, 500);
+    showToast("Menyiapkan PDF...", "info");
+    setTimeout(() => window.print(), 500);
   };
 
   const handleDelete = async (agendaId) => {
-    // Alert browser yang super singkat
-    if (window.confirm("Hapus agenda ini?")) {
+    if (window.confirm("Hapus?")) { // Notifikasi Singkat
       try {
         await remove(ref(db, `agenda_harian/${profile.uid}/${agendaId}`));
-        showToast("Agenda dihapus.", "success"); // Diubah lebih singkat
+        showToast("Dihapus.", "success");
       } catch (err) {
-        showToast("Gagal menghapus.", "error"); // Diubah lebih singkat
+        showToast("Gagal.", "error");
       }
     }
   };
@@ -117,11 +158,11 @@ export default function RekapAgenda() {
 
       if (editPhoto) {
         if (!googleToken) {
-          showToast("Sesi habis, harap relogin.", "warning"); // Diubah lebih singkat
+          showToast("Relogin.", "warning");
           setIsUploading(false);
           return;
         }
-        showToast("Mengunggah foto...", "info"); // Diubah lebih singkat
+        showToast("Mengunggah...", "info");
         const upload = await uploadFileToDrive(googleToken, profile.driveFolderId, editPhoto, `AGENDA_UPDATE_${Date.now()}.jpg`);
         updatedPhotoUrl = upload.webViewLink;
       }
@@ -134,11 +175,11 @@ export default function RekapAgenda() {
         photoUrl: updatedPhotoUrl
       });
 
-      showToast("Perubahan disimpan.", "success"); // Diubah lebih singkat
+      showToast("Disimpan.", "success");
       setIsEditModalOpen(false);
     } catch (err) {
       console.error(err);
-      showToast("Gagal menyimpan.", "error"); // Diubah lebih singkat
+      showToast("Gagal.", "error");
     } finally {
       setIsUploading(false);
     }
@@ -148,167 +189,258 @@ export default function RekapAgenda() {
 
   return (
     <div className="min-h-screen bg-[#05050a] pt-28 pb-12 px-4 sm:px-6">
-      <div className="max-w-5xl mx-auto space-y-6">
+      <div className="max-w-6xl mx-auto space-y-6">
         
+        {/* PANEL ATAS */}
         <div className="glass-card-glossy p-6 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4 border border-white/10 shadow-xl print:hidden animate-slide-in">
           <div>
-            <h2 className="text-2xl font-bold text-white"><i className="fas fa-timeline text-amber-500 mr-3"></i>Rekap Riwayat Kinerja</h2>
-            <p className="text-slate-400 text-xs mt-1 font-mono tracking-widest uppercase">Visualisasi Timeline & Kelola Aktivitas Harian</p>
+            <h2 className="text-2xl font-bold text-white"><i className="fas fa-list-check text-amber-500 mr-3"></i>Rekap Riwayat Kinerja</h2>
+            <p className="text-slate-400 text-xs mt-1 font-mono tracking-widest uppercase">Kelola Aktivitas & Cetak Laporan Bulanan</p>
           </div>
           <button 
             onClick={executePdfExport}
-            className="bg-white text-slate-900 hover:bg-gray-200 text-xs font-extrabold px-5 py-3 rounded-xl transition-all flex items-center gap-2 shadow-lg uppercase tracking-wider"
+            className="bg-white text-slate-900 hover:bg-gray-200 text-xs font-extrabold px-5 py-3 rounded-xl transition-all flex items-center justify-center w-full md:w-auto gap-2 shadow-lg uppercase tracking-wider"
           >
-            <i className="fas fa-print text-red-600 text-base"></i> EXPORT TO PDF
+            <i className="fas fa-print text-red-600 text-base"></i> EXPORT PDF
           </button>
         </div>
 
+        {/* PANEL NAVIGASI SUB-MENU & FILTER */}
         <div className="glass-card-glossy p-6 rounded-2xl border border-white/5 print:hidden animate-slide-in space-y-5">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-white/10 pb-4">
-            <h3 className="text-sm font-bold text-white tracking-widest uppercase">Pilih Bulan & Tahun</h3>
-            <input 
-              type="month" 
-              value={selectedMonth} 
-              onChange={handleMonthChange}
-              className="glass-input rounded-xl px-4 py-2 text-sm focus:outline-none font-bold tracking-widest bg-[#12121a] text-white border-white/20 [&::-webkit-calendar-picker-indicator]:filter [&::-webkit-calendar-picker-indicator]:invert"
-            />
-          </div>
-
-          <div className="flex overflow-x-auto gap-3 pb-4 custom-scrollbar snap-x">
-            {monthData.map((day) => {
-              const isSelected = day.dateStr === selectedDate;
-              return (
-                <div 
-                  key={day.dateStr}
-                  onClick={() => setSelectedDate(day.dateStr)}
-                  className={`flex flex-col items-center justify-center min-w-[70px] h-[80px] rounded-xl cursor-pointer transition-all duration-300 snap-center border ${
-                    isSelected 
-                      ? 'bg-gradient-to-b from-orange-500 to-amber-500 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.4)] transform scale-105' 
-                      : 'bg-[#1a1a24] border-white/10 hover:bg-white/5'
-                  }`}
-                >
-                  <span className={`text-[10px] font-bold uppercase tracking-widest ${isSelected ? 'text-amber-900' : 'text-slate-400'}`}>Tgl</span>
-                  <span className={`text-2xl font-black font-mono ${isSelected ? 'text-white' : 'text-slate-200'}`}>{day.dayNum}</span>
-                  
-                  <div className={`text-[9px] font-bold mt-1 px-2 rounded-full ${day.count >= maxAgenda ? 'bg-emerald-500 text-white' : day.count > 0 ? 'bg-white/20 text-white' : 'bg-transparent text-transparent'}`}>
-                    {day.count > 0 ? `${day.count} Agd` : '-'}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* AREA CETAK & TIMELINE HARIAN */}
-        <div className="glass-card-glossy p-8 rounded-3xl border border-white/10 shadow-2xl print:bg-white print:text-black print:border-0 print:shadow-none print:p-0">
-          
-          <div className="hidden print:block border-b-2 border-black pb-4 mb-6 text-center">
-            <h1 className="text-xl font-black uppercase tracking-wide text-black">LAPORAN AKTIVITAS KINERJA HARIAN SDM PKH</h1>
-            <h2 className="text-sm font-bold text-gray-800 mt-1 uppercase">Kementerian Sosial Republik Indonesia</h2>
-            <div className="grid grid-cols-2 text-left text-xs mt-5 gap-y-2 border-t pt-4 border-gray-300">
-              <div>Nama Personil : <b className="uppercase">{profile?.name}</b></div>
-              <div>Tanggal Laporan : <b>{formatIndoDate(selectedDate)}</b></div>
-              <div>Formasi Jabatan : <b className="uppercase">{profile?.jabatan?.replace(/_/g, ' ')}</b></div>
-              <div>Alamat Email : <b>{profile?.email}</b></div>
-            </div>
-          </div>
-
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8 print:border-b print:border-black print:pb-2">
-            <h3 className="text-lg font-bold text-white flex items-center gap-3 print:text-black">
-              <div className="h-8 w-8 bg-purple-500/20 text-purple-400 rounded-lg flex items-center justify-center print:hidden"><i className="fas fa-calendar-day"></i></div>
-              <span>Timeline: <span className="font-bold text-amber-400 print:text-black">{formatIndoDate(selectedDate)}</span></span>
-            </h3>
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             
-            <div className="text-xs uppercase tracking-widest font-bold bg-[#12121a] px-4 py-2 rounded-xl border border-white/10 print:hidden">
-              <span className="text-slate-400 mr-2">Status Target:</span>
-              <span className={filteredAgendas.length >= maxAgenda ? "text-emerald-400" : "text-amber-400"}>
-                {filteredAgendas.length} / {maxAgenda} Agenda
-              </span>
+            {/* SUB-MENU TABS */}
+            <div className="flex bg-black/40 p-1.5 rounded-xl border border-white/10 shadow-inner w-full md:w-auto">
+              <button 
+                onClick={() => setViewMode('timeline')} 
+                className={`flex-1 md:flex-none px-5 py-2.5 text-xs font-bold uppercase tracking-widest rounded-lg transition-all duration-300 ${viewMode === 'timeline' ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-lg shadow-orange-500/20' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+              >
+                <i className="fas fa-timeline mr-2"></i>Harian (Timeline)
+              </button>
+              <button 
+                onClick={() => setViewMode('table')} 
+                className={`flex-1 md:flex-none px-5 py-2.5 text-xs font-bold uppercase tracking-widest rounded-lg transition-all duration-300 ${viewMode === 'table' ? 'bg-gradient-to-r from-purple-600 to-indigo-500 text-white shadow-lg shadow-purple-500/20' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+              >
+                <i className="fas fa-table-list mr-2"></i>Bulanan (Tabel)
+              </button>
+            </div>
+
+            {/* FILTER BULAN */}
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <label className="text-[10px] font-bold tracking-widest text-slate-400 uppercase hidden sm:block">Pilih Bulan:</label>
+              <input 
+                type="month" 
+                value={selectedMonth} 
+                onChange={handleMonthChange}
+                className="w-full md:w-auto glass-input rounded-xl px-4 py-2.5 text-sm focus:outline-none font-bold tracking-widest bg-[#12121a] text-white border-white/20 [&::-webkit-calendar-picker-indicator]:filter [&::-webkit-calendar-picker-indicator]:invert cursor-pointer"
+              />
             </div>
           </div>
 
-          {filteredAgendas.length === 0 ? (
-            <div className="py-16 text-center text-slate-500 print:text-gray-500">
-              <i className="fas fa-clipboard-question text-4xl mb-4 block text-slate-700 print:text-gray-300"></i>
-              <p className="text-sm font-medium">Tidak ada rekaman agenda kegiatan pada tanggal ini.</p>
-              {isWeekend && <p className="text-xs mt-2 text-orange-400/50">Tanggal ini adalah akhir pekan.</p>}
-            </div>
-          ) : (
-            <div className="relative border-l-2 border-purple-500/30 ml-3 md:ml-6 space-y-10 print:border-0 print:ml-0 print:space-y-6">
-              {filteredAgendas.map((item, index) => (
-                <div key={item.agendaId} className="relative pl-8 md:pl-10 print:pl-0 print:break-inside-avoid">
-                  
-                  <div className="absolute -left-[9px] top-1 h-4 w-4 bg-amber-500 rounded-full ring-4 ring-[#05050a] print:hidden shadow-[0_0_10px_rgba(245,158,11,0.5)]"></div>
-                  
-                  <div className="p-6 rounded-2xl bg-[#1a1a24]/60 border border-white/5 flex flex-col md:flex-row gap-6 items-start hover:border-white/20 transition-all duration-300 print:bg-transparent print:border print:border-gray-400 print:text-black print:rounded-none print:p-4">
-                    
-                    {item.photoUrl ? (
-                      <img 
-                        src={item.photoUrl} 
-                        alt="Dokumentasi" 
-                        className="w-full md:w-40 h-28 rounded-xl object-cover bg-slate-900 border border-white/10 flex-shrink-0 print:border-gray-400 print:rounded-sm print:h-24 print:w-32"
-                      />
-                    ) : (
-                      <div className="w-full md:w-40 h-28 rounded-xl bg-black/50 border border-white/10 flex flex-col items-center justify-center text-slate-600 print:border-gray-400 print:rounded-sm print:h-24 print:w-32 print:bg-gray-100 flex-shrink-0">
-                        <i className="fas fa-image-slash text-2xl mb-1"></i>
-                        <span className="text-[9px] uppercase tracking-widest print:hidden">Belum Ada Foto</span>
-                      </div>
-                    )}
-                    
-                    <div className="flex-1 w-full space-y-3">
-                      <div className="flex flex-wrap justify-between items-start gap-2">
-                        <span className="text-[10px] font-bold px-3 py-1.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20 tracking-widest uppercase font-mono print:bg-gray-100 print:text-black print:border-gray-400">
-                          {item.waktu || "00:00"} | {item.rhk_code} | Laporan: {item.display_id}
-                        </span>
-                        
-                        <span className="text-[10px] font-bold px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-lg print:border-gray-400 print:bg-white print:text-black uppercase tracking-widest">
-                          Vol: {item.volume}
-                        </span>
-                      </div>
-                      
-                      <h4 className="text-base font-bold text-white leading-snug print:text-black">{item.laporan_harian}</h4>
-                      
-                      {item.tempat && (
-                        <p className="text-xs text-blue-400 font-medium print:text-black"><i className="fas fa-map-marker-alt mr-1"></i> {item.tempat}</p>
-                      )}
-
-                      <p className="text-sm text-slate-300 leading-relaxed font-light print:text-gray-800 text-justify">
-                        <b>Rincian Lapangan:</b> {item.detail_aktivitas}
-                      </p>
-
-                      <div className="flex gap-3 pt-3 border-t border-white/5 print:hidden">
-                        <button 
-                          onClick={() => openEditModal(item)} 
-                          className="flex items-center text-[10px] font-bold uppercase tracking-widest text-orange-400 bg-orange-500/10 hover:bg-orange-500 hover:text-white px-3 py-1.5 rounded-lg border border-orange-500/20 transition-all"
-                        >
-                          <i className="fas fa-edit mr-1.5"></i> Edit
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(item.agendaId)} 
-                          className="flex items-center text-[10px] font-bold uppercase tracking-widest text-red-400 bg-red-500/10 hover:bg-red-500 hover:text-white px-3 py-1.5 rounded-lg border border-red-500/20 transition-all"
-                        >
-                          <i className="fas fa-trash-alt mr-1.5"></i> Hapus
-                        </button>
-                      </div>
-
+          {/* KALENDER HORIZONTAL (Hanya tampil di mode Timeline) */}
+          {viewMode === 'timeline' && (
+            <div className="flex overflow-x-auto gap-3 pt-2 pb-2 custom-scrollbar snap-x" ref={scrollContainerRef}>
+              {monthData.map((day) => {
+                const isSelected = day.dateStr === selectedDate;
+                return (
+                  <div 
+                    key={day.dateStr}
+                    ref={(el) => (activeDateRefs.current[day.dateStr] = el)}
+                    onClick={() => setSelectedDate(day.dateStr)}
+                    className={`flex flex-col items-center justify-center min-w-[70px] h-[80px] rounded-xl cursor-pointer transition-all duration-300 snap-center border ${
+                      isSelected 
+                        ? 'bg-gradient-to-b from-orange-500 to-amber-500 border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.4)] transform scale-105' 
+                        : 'bg-[#1a1a24] border-white/10 hover:bg-white/5'
+                    }`}
+                  >
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${isSelected ? 'text-amber-900' : 'text-slate-400'}`}>Tgl</span>
+                    <span className={`text-2xl font-black font-mono ${isSelected ? 'text-white' : 'text-slate-200'}`}>{day.dayNum}</span>
+                    <div className={`text-[9px] font-bold mt-1 px-2 rounded-full ${day.count >= maxAgenda ? 'bg-emerald-500 text-white' : day.count > 0 ? 'bg-white/20 text-white' : 'bg-transparent text-transparent'}`}>
+                      {day.count > 0 ? `${day.count} Agd` : '-'}
                     </div>
                   </div>
-                </div>
-              ))}
-
-              <div className="hidden print:flex justify-end mt-12 pt-8">
-                <div className="text-center w-64">
-                  <p className="text-xs mb-16 text-black">Tapin, {formatIndoDate(selectedDate)}<br/>Yang Melaporkan,</p>
-                  <p className="text-xs font-bold uppercase underline text-black">{profile?.name}</p>
-                  <p className="text-xs uppercase text-black">{profile?.jabatan?.replace(/_/g, ' ')}</p>
-                </div>
-              </div>
-
+                );
+              })}
             </div>
           )}
         </div>
+
+        {/* ========================================================= */}
+        {/* MODE 1: TAMPILAN TIMELINE (HARIAN) */}
+        {/* ========================================================= */}
+        {viewMode === 'timeline' && (
+          <div className="glass-card-glossy p-8 rounded-3xl border border-white/10 shadow-2xl print:bg-white print:text-black print:border-0 print:shadow-none print:p-0 animate-slide-in">
+            
+            {/* Kop Surat PDF */}
+            <div className="hidden print:block border-b-2 border-black pb-4 mb-6 text-center">
+              <h1 className="text-xl font-black uppercase tracking-wide text-black">LAPORAN KINERJA HARIAN SDM PKH</h1>
+              <h2 className="text-sm font-bold text-gray-800 mt-1 uppercase">Kementerian Sosial Republik Indonesia</h2>
+              <div className="grid grid-cols-2 text-left text-xs mt-5 gap-y-2 border-t pt-4 border-gray-300">
+                <div>Nama Personil : <b className="uppercase">{profile?.name}</b></div>
+                <div>Tanggal Laporan : <b>{formatIndoDate(selectedDate)}</b></div>
+                <div>Formasi Jabatan : <b className="uppercase">{profile?.jabatan?.replace(/_/g, ' ')}</b></div>
+                <div>Alamat Email : <b>{profile?.email}</b></div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8 print:border-b print:border-black print:pb-2">
+              <h3 className="text-lg font-bold text-white flex items-center gap-3 print:text-black">
+                <div className="h-8 w-8 bg-purple-500/20 text-purple-400 rounded-lg flex items-center justify-center print:hidden"><i className="fas fa-calendar-day"></i></div>
+                <span>Timeline: <span className="font-bold text-amber-400 print:text-black">{formatIndoDate(selectedDate)}</span></span>
+              </h3>
+              <div className="text-xs uppercase tracking-widest font-bold bg-[#12121a] px-4 py-2 rounded-xl border border-white/10 print:hidden">
+                <span className="text-slate-400 mr-2">Target Harian:</span>
+                <span className={filteredAgendas.length >= maxAgenda ? "text-emerald-400" : "text-amber-400"}>{filteredAgendas.length} / {maxAgenda} Agenda</span>
+              </div>
+            </div>
+
+            {filteredAgendas.length === 0 ? (
+              <div className="py-16 text-center text-slate-500 print:text-gray-500">
+                <i className="fas fa-clipboard-question text-4xl mb-4 block text-slate-700 print:text-gray-300"></i>
+                <p className="text-sm font-medium">Tidak ada rekaman agenda kegiatan pada tanggal ini.</p>
+                <p className="text-xs mt-3 text-slate-500 font-mono">Geser kalender di atas untuk melihat tanggal yang ada datanya.</p>
+              </div>
+            ) : (
+              <div className="relative border-l-2 border-purple-500/30 ml-3 md:ml-6 space-y-10 print:border-0 print:ml-0 print:space-y-6">
+                {filteredAgendas.map((item) => (
+                  <div key={item.agendaId} className="relative pl-8 md:pl-10 print:pl-0 print:break-inside-avoid">
+                    <div className="absolute -left-[9px] top-1 h-4 w-4 bg-amber-500 rounded-full ring-4 ring-[#05050a] print:hidden shadow-[0_0_10px_rgba(245,158,11,0.5)]"></div>
+                    
+                    <div className="p-6 rounded-2xl bg-[#1a1a24]/60 border border-white/5 flex flex-col md:flex-row gap-6 items-start hover:border-white/20 transition-all duration-300 print:bg-transparent print:border print:border-gray-400 print:text-black print:rounded-none print:p-4">
+                      
+                      {item.photoUrl ? (
+                        <img src={item.photoUrl} alt="Dokumentasi" className="w-full md:w-40 h-32 rounded-xl object-cover bg-slate-900 border border-white/10 flex-shrink-0 print:border-gray-400 print:rounded-sm print:h-24 print:w-32" />
+                      ) : (
+                        <div className="w-full md:w-40 h-32 rounded-xl bg-black/50 border border-white/10 flex flex-col items-center justify-center text-slate-600 print:border-gray-400 print:rounded-sm print:h-24 print:w-32 print:bg-gray-100 flex-shrink-0">
+                          <i className="fas fa-image-slash text-2xl mb-1"></i>
+                          <span className="text-[9px] uppercase tracking-widest print:hidden">Belum Ada Foto</span>
+                        </div>
+                      )}
+                      
+                      <div className="flex-1 w-full space-y-3">
+                        <div className="flex flex-wrap justify-between items-start gap-2">
+                          <span className="text-[10px] font-bold px-3 py-1.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20 tracking-widest uppercase font-mono print:bg-gray-100 print:text-black print:border-gray-400">
+                            {item.waktu || "00:00"} | {item.rhk_code} | Laporan: {item.display_id}
+                          </span>
+                          <span className="text-[10px] font-bold px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-lg print:border-gray-400 print:bg-white print:text-black uppercase tracking-widest">
+                            Vol: {item.volume}
+                          </span>
+                        </div>
+                        
+                        <h4 className="text-base font-bold text-white leading-snug print:text-black">{item.laporan_harian}</h4>
+                        {item.tempat && <p className="text-xs text-blue-400 font-medium print:text-black"><i className="fas fa-map-marker-alt mr-1"></i> {item.tempat}</p>}
+                        <p className="text-sm text-slate-300 leading-relaxed font-light print:text-gray-800 text-justify">
+                          <b>Rincian Lapangan:</b> {item.detail_aktivitas}
+                        </p>
+
+                        <div className="flex gap-3 pt-3 border-t border-white/5 print:hidden">
+                          <button onClick={() => openEditModal(item)} className="flex items-center text-[10px] font-bold uppercase tracking-widest text-orange-400 bg-orange-500/10 hover:bg-orange-500 hover:text-white px-3 py-1.5 rounded-lg border border-orange-500/20 transition-all">
+                            <i className="fas fa-edit mr-1.5"></i> Edit
+                          </button>
+                          <button onClick={() => handleDelete(item.agendaId)} className="flex items-center text-[10px] font-bold uppercase tracking-widest text-red-400 bg-red-500/10 hover:bg-red-500 hover:text-white px-3 py-1.5 rounded-lg border border-red-500/20 transition-all">
+                            <i className="fas fa-trash-alt mr-1.5"></i> Hapus
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="hidden print:flex justify-end mt-12 pt-8">
+                  <div className="text-center w-64 text-black">
+                    <p className="text-xs mb-16">Tapin, {formatIndoDate(selectedDate)}<br/>Yang Melaporkan,</p>
+                    <p className="text-xs font-bold uppercase underline">{profile?.name}</p>
+                    <p className="text-xs uppercase">{profile?.jabatan?.replace(/_/g, ' ')}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* MODE 2: TAMPILAN TABEL (BULANAN) */}
+        {/* ========================================================= */}
+        {viewMode === 'table' && (
+          <div className="glass-card-glossy rounded-3xl border border-white/10 shadow-2xl overflow-hidden print:bg-white print:border-none print:shadow-none animate-slide-in">
+            
+            {/* Kop Surat PDF */}
+            <div className="hidden print:block border-b-2 border-black pb-4 mb-6 mt-8 mx-8 text-center">
+              <h1 className="text-xl font-black uppercase tracking-wide text-black">REKAPITULASI AGENDA KINERJA BULANAN</h1>
+              <h2 className="text-sm font-bold text-gray-800 mt-1 uppercase">Kementerian Sosial Republik Indonesia</h2>
+              <div className="grid grid-cols-2 text-left text-xs mt-5 gap-y-2 border-t pt-4 border-gray-300">
+                <div>Nama Personil : <b className="uppercase">{profile?.name}</b></div>
+                <div>Periode Laporan : <b className="uppercase">{getMonthName(selectedMonth)}</b></div>
+                <div>Formasi Jabatan : <b className="uppercase">{profile?.jabatan?.replace(/_/g, ' ')}</b></div>
+                <div>Total Agenda : <b>{monthlyAgendas.length} Kegiatan</b></div>
+              </div>
+            </div>
+
+            <div className="p-6 border-b border-white/5 bg-black/20 print:hidden">
+              <h3 className="text-lg font-bold text-white flex items-center gap-3">
+                <i className="fas fa-table text-purple-400"></i>
+                Rekapitulasi Bulan <span className="text-amber-400">{getMonthName(selectedMonth)}</span>
+              </h3>
+            </div>
+
+            {monthlyAgendas.length === 0 ? (
+              <div className="py-16 text-center text-slate-500 print:text-gray-500">
+                <i className="fas fa-folder-open text-4xl mb-4 block text-slate-700 print:text-gray-300"></i>
+                <p className="text-sm font-medium">Data kosong pada bulan ini.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto custom-scrollbar p-0 sm:p-4 print:p-0">
+                <table className="w-full text-left border-collapse print:text-black">
+                  <thead>
+                    <tr className="bg-black/50 text-slate-400 text-[10px] uppercase tracking-widest font-bold border-b border-white/10 print:bg-gray-200 print:text-black print:border-black">
+                      <th className="p-4 text-center border-r border-white/5 print:border-gray-400">No</th>
+                      <th className="p-4 border-r border-white/5 print:border-gray-400 whitespace-nowrap">Tgl / Waktu</th>
+                      <th className="p-4 text-center border-r border-white/5 print:border-gray-400 whitespace-nowrap">RHK</th>
+                      <th className="p-4 text-center border-r border-white/5 print:border-gray-400 whitespace-nowrap">ID Sub</th>
+                      <th className="p-4 border-r border-white/5 print:border-gray-400 min-w-[250px]">Laporan Harian & Detail</th>
+                      <th className="p-4 text-center print:border-gray-400 print:hidden">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-xs text-slate-200 print:divide-gray-400 print:text-black">
+                    {monthlyAgendas.map((item, index) => (
+                      <tr key={item.agendaId} className="hover:bg-white/5 transition-colors print:hover:bg-transparent">
+                        <td className="p-4 text-center font-mono font-bold text-amber-400 border-r border-white/5 print:border-gray-400 print:text-black align-top">{index + 1}</td>
+                        <td className="p-4 border-r border-white/5 print:border-gray-400 align-top whitespace-nowrap">
+                          <span className="block font-bold text-white print:text-black">{item.tanggal}</span>
+                          <span className="block text-[10px] text-slate-400 font-mono mt-1 print:text-gray-600">{item.waktu || '00:00'}</span>
+                        </td>
+                        <td className="p-4 text-center font-bold text-purple-400 border-r border-white/5 print:border-gray-400 print:text-black align-top whitespace-nowrap">{item.rhk_code}</td>
+                        <td className="p-4 text-center font-mono border-r border-white/5 print:border-gray-400 align-top">{item.display_id || '-'}</td>
+                        <td className="p-4 border-r border-white/5 print:border-gray-400 align-top">
+                          <div className="font-bold text-white mb-1 leading-snug print:text-black">{item.laporan_harian}</div>
+                          <div className="text-[11px] text-slate-400 leading-relaxed italic print:text-gray-700">{item.detail_aktivitas}</div>
+                        </td>
+                        <td className="p-4 text-center space-y-2 align-top print:hidden">
+                          <button onClick={() => openEditModal(item)} className="block w-full text-[10px] text-orange-400 hover:text-white bg-orange-500/10 hover:bg-orange-500 px-3 py-1.5 rounded border border-orange-500/20 font-bold uppercase transition-all">Edit</button>
+                          <button onClick={() => handleDelete(item.agendaId)} className="block w-full text-[10px] text-red-400 hover:text-white bg-red-500/10 hover:bg-red-500 px-3 py-1.5 rounded border border-red-500/20 font-bold uppercase transition-all">Hapus</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* Tanda Tangan Khusus Print di Tabel */}
+                <div className="hidden print:flex justify-end mt-12 pt-8 pr-8">
+                  <div className="text-center w-64 text-black">
+                    <p className="text-xs mb-16">Tapin, {formatIndoDate(localDateStr)}<br/>Yang Melaporkan,</p>
+                    <p className="text-xs font-bold uppercase underline">{profile?.name}</p>
+                    <p className="text-xs uppercase">{profile?.jabatan?.replace(/_/g, ' ')}</p>
+                  </div>
+                </div>
+
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
 
+      {/* MODAL EDIT AGENDA (Bisa dipanggil dari Timeline & Table) */}
       {isEditModalOpen && editData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 print:hidden">
           <div className="glass-card-glossy max-w-lg w-full p-6 sm:p-8 rounded-3xl border border-white/10 shadow-2xl relative animate-slide-in max-h-[90vh] overflow-y-auto custom-scrollbar bg-gradient-to-br from-[#0f0f15] to-[#05050a]">
@@ -317,7 +449,7 @@ export default function RekapAgenda() {
               <i className="fas fa-times"></i>
             </button>
             
-            <h3 className="text-lg font-bold text-white mb-2">Edit Aktivitas Kinerja</h3>
+            <h3 className="text-lg font-bold text-white mb-2">Edit Aktivitas</h3>
             <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest border-b border-white/10 pb-4 mb-6">
               RHK: <span className="text-amber-400">{editData.rhk_code}</span> | Laporan: <span className="text-amber-400">{editData.display_id}</span>
             </p>
@@ -335,7 +467,7 @@ export default function RekapAgenda() {
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-widest text-slate-300 font-bold mb-2">Tempat Kegiatan (Lokasi)</label>
+                <label className="block text-[10px] uppercase tracking-widest text-slate-300 font-bold mb-2">Tempat Kegiatan</label>
                 <input type="text" required value={editData.tempat} onChange={e => setEditData({...editData, tempat: e.target.value})} className={inputClass} />
               </div>
 
@@ -346,7 +478,7 @@ export default function RekapAgenda() {
 
               <div>
                 <label className="block text-[10px] uppercase tracking-widest text-slate-300 font-bold mb-2">
-                  Update/Unggah Foto <span className="text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">(Opsional)</span>
+                  Ganti Foto <span className="text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded">(Opsional)</span>
                 </label>
                 <input 
                   type="file" 
@@ -355,14 +487,14 @@ export default function RekapAgenda() {
                   className="w-full text-xs text-slate-300 file:mr-4 file:py-3 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-600 file:text-white hover:file:bg-blue-500 cursor-pointer file:transition-all border border-white/20 bg-[#12121a] rounded-xl focus:outline-none" 
                 />
                 {!editPhoto && !editData.photoUrl && (
-                  <p className="text-[10px] text-red-400 mt-2 font-mono">* Laporan ini belum memiliki lampiran foto.</p>
+                  <p className="text-[10px] text-red-400 mt-2 font-mono">* Laporan ini belum memiliki foto.</p>
                 )}
               </div>
 
               <div className="flex gap-3 pt-4 border-t border-white/5 mt-4">
                 <button type="button" onClick={() => setIsEditModalOpen(false)} className="flex-1 bg-white/5 hover:bg-white/10 p-3.5 rounded-xl font-bold uppercase tracking-wider text-white text-xs transition-all">Batal</button>
                 <button type="submit" disabled={isUploading} className="flex-1 bg-gradient-to-r from-orange-600 to-amber-500 hover:brightness-110 p-3.5 rounded-xl font-bold uppercase tracking-wider text-white text-xs shadow-[0_5px_15px_-5px_rgba(245,158,11,0.5)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                  {isUploading ? <><i className="fas fa-spinner animate-spin"></i> Menyimpan...</> : <><i className="fas fa-save"></i> Simpan Perubahan</>}
+                  {isUploading ? <><i className="fas fa-spinner animate-spin"></i> Menyimpan...</> : <><i className="fas fa-save"></i> Simpan</>}
                 </button>
               </div>
             </form>
