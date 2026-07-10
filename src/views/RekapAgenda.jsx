@@ -17,7 +17,6 @@ export default function RekapAgenda() {
   const [selectedMonth, setSelectedMonth] = useState(currentMonthStr);
   const [selectedDate, setSelectedDate] = useState(currentDateStr);
 
-  // State untuk Modal Edit
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editData, setEditData] = useState(null);
   const [editPhoto, setEditPhoto] = useState(null);
@@ -42,7 +41,6 @@ export default function RekapAgenda() {
     return () => unsubscribe();
   }, [profile]);
 
-  // Fungsi Format Tanggal (Contoh: Kamis, 15 Agustus 2026)
   const formatIndoDate = (dateString) => {
     if (!dateString) return '';
     const date = new Date(dateString);
@@ -86,32 +84,30 @@ export default function RekapAgenda() {
   };
 
   const executePdfExport = () => {
-    showToast("Mempersiapkan dokumen PDF...", "success");
+    showToast("Menyiapkan PDF...", "success"); // Diubah lebih singkat
     setTimeout(() => {
       window.print();
     }, 500);
   };
 
-  // EKSEKUSI HAPUS AGENDA
   const handleDelete = async (agendaId) => {
-    if (window.confirm("Apakah Anda yakin ingin menghapus laporan agenda ini secara permanen?")) {
+    // Alert browser yang super singkat
+    if (window.confirm("Hapus agenda ini?")) {
       try {
         await remove(ref(db, `agenda_harian/${profile.uid}/${agendaId}`));
-        showToast("Laporan agenda berhasil dihapus.", "success");
+        showToast("Agenda dihapus.", "success"); // Diubah lebih singkat
       } catch (err) {
-        showToast("Gagal menghapus data: " + err.message, "error");
+        showToast("Gagal menghapus.", "error"); // Diubah lebih singkat
       }
     }
   };
 
-  // BUKA MODAL EDIT
   const openEditModal = (item) => {
     setEditData({ ...item });
-    setEditPhoto(null); // Reset file foto jika ada
+    setEditPhoto(null); 
     setIsEditModalOpen(true);
   };
 
-  // EKSEKUSI SIMPAN EDIT AGENDA
   const handleEditSubmit = async (e) => {
     e.preventDefault();
     setIsUploading(true);
@@ -119,19 +115,17 @@ export default function RekapAgenda() {
     try {
       let updatedPhotoUrl = editData.photoUrl || "";
 
-      // Jika user memasukkan foto baru
       if (editPhoto) {
         if (!googleToken) {
-          showToast("Token Google Drive terputus. Harap muat ulang atau relogin.", "warning");
+          showToast("Sesi habis, harap relogin.", "warning"); // Diubah lebih singkat
           setIsUploading(false);
           return;
         }
-        showToast("Mengunggah foto baru ke Drive...", "info");
+        showToast("Mengunggah foto...", "info"); // Diubah lebih singkat
         const upload = await uploadFileToDrive(googleToken, profile.driveFolderId, editPhoto, `AGENDA_UPDATE_${Date.now()}.jpg`);
         updatedPhotoUrl = upload.webViewLink;
       }
 
-      // Update data di Firebase
       await update(ref(db, `agenda_harian/${profile.uid}/${editData.agendaId}`), {
         waktu: editData.waktu,
         tempat: editData.tempat,
@@ -140,11 +134,11 @@ export default function RekapAgenda() {
         photoUrl: updatedPhotoUrl
       });
 
-      showToast("Pembaruan laporan berhasil disimpan!", "success");
+      showToast("Perubahan disimpan.", "success"); // Diubah lebih singkat
       setIsEditModalOpen(false);
     } catch (err) {
       console.error(err);
-      showToast("Gagal memperbarui data: " + err.message, "error");
+      showToast("Gagal menyimpan.", "error"); // Diubah lebih singkat
     } finally {
       setIsUploading(false);
     }
@@ -213,7 +207,6 @@ export default function RekapAgenda() {
             <h2 className="text-sm font-bold text-gray-800 mt-1 uppercase">Kementerian Sosial Republik Indonesia</h2>
             <div className="grid grid-cols-2 text-left text-xs mt-5 gap-y-2 border-t pt-4 border-gray-300">
               <div>Nama Personil : <b className="uppercase">{profile?.name}</b></div>
-              {/* Tanggal menggunakan format Indo di PDF */}
               <div>Tanggal Laporan : <b>{formatIndoDate(selectedDate)}</b></div>
               <div>Formasi Jabatan : <b className="uppercase">{profile?.jabatan?.replace(/_/g, ' ')}</b></div>
               <div>Alamat Email : <b>{profile?.email}</b></div>
@@ -223,7 +216,6 @@ export default function RekapAgenda() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8 print:border-b print:border-black print:pb-2">
             <h3 className="text-lg font-bold text-white flex items-center gap-3 print:text-black">
               <div className="h-8 w-8 bg-purple-500/20 text-purple-400 rounded-lg flex items-center justify-center print:hidden"><i className="fas fa-calendar-day"></i></div>
-              {/* Tanggal menggunakan format Indo di UI Web */}
               <span>Timeline: <span className="font-bold text-amber-400 print:text-black">{formatIndoDate(selectedDate)}</span></span>
             </h3>
             
@@ -250,7 +242,6 @@ export default function RekapAgenda() {
                   
                   <div className="p-6 rounded-2xl bg-[#1a1a24]/60 border border-white/5 flex flex-col md:flex-row gap-6 items-start hover:border-white/20 transition-all duration-300 print:bg-transparent print:border print:border-gray-400 print:text-black print:rounded-none print:p-4">
                     
-                    {/* BAGIAN GAMBAR */}
                     {item.photoUrl ? (
                       <img 
                         src={item.photoUrl} 
@@ -264,10 +255,8 @@ export default function RekapAgenda() {
                       </div>
                     )}
                     
-                    {/* BAGIAN INFORMASI TIMELINE */}
                     <div className="flex-1 w-full space-y-3">
                       <div className="flex flex-wrap justify-between items-start gap-2">
-                        {/* BADGE RHK & LAPORAN */}
                         <span className="text-[10px] font-bold px-3 py-1.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20 tracking-widest uppercase font-mono print:bg-gray-100 print:text-black print:border-gray-400">
                           {item.waktu || "00:00"} | {item.rhk_code} | Laporan: {item.display_id}
                         </span>
@@ -287,13 +276,12 @@ export default function RekapAgenda() {
                         <b>Rincian Lapangan:</b> {item.detail_aktivitas}
                       </p>
 
-                      {/* TOMBOL AKSI CRUD (Disembunyikan saat print) */}
                       <div className="flex gap-3 pt-3 border-t border-white/5 print:hidden">
                         <button 
                           onClick={() => openEditModal(item)} 
                           className="flex items-center text-[10px] font-bold uppercase tracking-widest text-orange-400 bg-orange-500/10 hover:bg-orange-500 hover:text-white px-3 py-1.5 rounded-lg border border-orange-500/20 transition-all"
                         >
-                          <i className="fas fa-edit mr-1.5"></i> Edit / Lengkapi
+                          <i className="fas fa-edit mr-1.5"></i> Edit
                         </button>
                         <button 
                           onClick={() => handleDelete(item.agendaId)} 
@@ -321,7 +309,6 @@ export default function RekapAgenda() {
         </div>
       </div>
 
-      {/* MODAL EDIT AGENDA */}
       {isEditModalOpen && editData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 print:hidden">
           <div className="glass-card-glossy max-w-lg w-full p-6 sm:p-8 rounded-3xl border border-white/10 shadow-2xl relative animate-slide-in max-h-[90vh] overflow-y-auto custom-scrollbar bg-gradient-to-br from-[#0f0f15] to-[#05050a]">
